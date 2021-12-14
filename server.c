@@ -83,9 +83,10 @@ void reconnaissance_DATA(int *sequence,int *sequence_ACK_2 , unsigned char *DATA
 
 }
 
-void gestion_client_fork(int *server_desc_control , int *server_desc_message , struct sockaddr_in *adresse_message , int port , struct sockaddr_storage *serverStorage , socklen_t addr_size ) {
+void gestion_client_fork(int *server_desc_control , int *server_desc_message , struct sockaddr_in *adr_mes , int port , struct sockaddr_storage *serverStorage , socklen_t addr_size ) {
 
   socklen_t addr_size2 = sizeof(struct sockaddr_in);
+  struct sockaddr_in adresse_message = *adr_mes ;
   long double file_size ; 
   struct timeval tv,RTT_start,RTT_end,start,end;
   gettimeofday(&start , NULL );
@@ -97,20 +98,24 @@ void gestion_client_fork(int *server_desc_control , int *server_desc_message , s
   unsigned char DATA_char[RCVSIZE-6];
   char *sequence_char = (char *)malloc(6*sizeof(char));
   char buffer_message[RCVSIZE]; 
+  char end_message[RCVSIZE];
+  int end_sequence =-1;
+  int first_sequence_of_window = 1;
   int sequence = 1 ;
-  int sequence_ACK_2 = 0;
+  int sequence_ACK_2 = 1;
   int message ; 
   int NO_STOP =1 ;
   int error ; 
   int size ; 
   int compt = 0 ;
-  int slow_start_window_value = 30;
+  int slow_start_window_value = 20;
   int collision_detection = 0 ;  
   unsigned long int RTT = 300 ;
-  unsigned long int RTT_init = 5000;
+  //unsigned long int RTT_init = 5000;
   double trust_in_network = 0.1 ; 
-  int security_factor = 2;
+  int security_factor = 0;
   int sequence_fin_window ; 
+  int RTT_init;
   int window = 50 ; 
   int *window_tab = (int *)malloc(200*sizeof(int));
   int fils_gestion_ack;
@@ -121,7 +126,7 @@ void gestion_client_fork(int *server_desc_control , int *server_desc_message , s
 
 
   memset(buffer_message,0,RCVSIZE);
-  message = recvfrom(*server_desc_message,buffer_message,RCVSIZE,0,(struct sockaddr *)adresse_message,&addr_size2);
+  message = recvfrom(*server_desc_message,buffer_message,RCVSIZE,0,(struct sockaddr *)&adresse_message,&addr_size2);
   if(message == -1){
     printf("Error \n");
   }
@@ -136,48 +141,66 @@ void gestion_client_fork(int *server_desc_control , int *server_desc_message , s
     tv.tv_usec = 500000 ; 
     printf("Size : %i \n", size);
     gettimeofday(&RTT_start,NULL);
-    error = sendto(*server_desc_message,buffer_message,size+6,0,(struct sockaddr * )adresse_message , addr_size2);
+    error = sendto(*server_desc_message,buffer_message,size+6,0,(struct sockaddr * )&adresse_message , addr_size2);
     result_select = select(5, &readset , NULL , NULL , &tv); 
   }while(result_select == 0);
-  message = recvfrom(*server_desc_message,buffer_message,RCVSIZE,0,(struct sockaddr *)adresse_message,&addr_size2);
+  message = recvfrom(*server_desc_message,buffer_message,RCVSIZE,0,(struct sockaddr *)&adresse_message,&addr_size2);
   gettimeofday(&RTT_end,NULL);
   printf("RTT_start : %li , RTT_end : %li  difference : %li\n",RTT_start.tv_usec , RTT_end.tv_usec,RTT_end.tv_usec-RTT_start.tv_usec);
-  RTT = (RTT_end.tv_usec - RTT_start.tv_usec);
+  RTT = abs((RTT_end.tv_usec - RTT_start.tv_usec));
+  if(RTT < 7000){
+    RTT = 7000; 
+  }
   RTT = (int)(RTT+security_factor*RTT);
+  RTT_init = RTT;
   printf("RTT : %li \n",RTT);
   sequence = sequence+1;
   sprintf(sequence_char,"%06i",sequence);
 
 
   do{
+    first_sequence_of_window=sequence;
     for(int i = 0 ; i<window ; i++ ){
       memset(buffer_message, 0 , RCVSIZE);  
       strcpy((char * )buffer_message,sequence_char);
       size = fread(buffer_message+6,1,RCVSIZE-6,fp);
-      if( size != RCVSIZE-6 ){
-        NO_STOP =0 ;
-        i = window;
+      if( size != RCVSIZE-6){
+        //NO_STOP =0 ;
+        if(size == 0 ){}
+        else{
+        printf("size : %i \n",size);
+        i = window+1;
+        end_sequence = sequence ;
+        printf("end_sequence : %i \n",end_sequence);
+        error = sendto(*server_desc_message,buffer_message,size+6,0,(struct sockaddr * )&adresse_message , addr_size2);
+        }
       }
       else{ 
-        error = sendto(*server_desc_message,buffer_message,RCVSIZE,0,(struct sockaddr * )adresse_message , addr_size2);
+        error = sendto(*server_desc_message,buffer_message,RCVSIZE,0,(struct sockaddr * )&adresse_message , addr_size2);
         sequence = sequence+1;
         sprintf(sequence_char,"%06i",sequence);
       }
     }
     gettimeofday(&RTT_start,NULL);
     sequence_fin_window = sequence;
+    printf("fin\n");
     do{
+      printf("je rentre \n");
       FD_SET(4 , &readset);
       tv.tv_sec = 0 ;
-      tv.tv_usec = 4000 ;
+      tv.tv_usec = RTT/2 ;
       result_select = select(5, &readset , NULL , NULL , &tv);
+      printf("result select : %i \n",result_select);
       if(result_select > 0){ 
       memset(buffer_message , 0 , RCVSIZE);
-      message = recvfrom(*server_desc_message,buffer_message,RCVSIZE,0,(struct sockaddr *)adresse_message,&addr_size2);
-      reconnaissance_DATA(&sequence , &sequence_ACK_2 , DATA_char , buffer_message , &nombre_ACK_succ);
-      fseek(fp,(RCVSIZE-6)*(sequence_ACK_2-1),SEEK_SET);
-      sequence = sequence_ACK_2;
-      sprintf(sequence_char,"%06i",sequence);
+      message = recvfrom(*server_desc_message,buffer_message,RCVSIZE,0,(struct sockaddr *)&adresse_message,&addr_size2);
+      printf("message : %i\n" , message);
+      if(message != -1){
+        reconnaissance_DATA(&sequence , &sequence_ACK_2 , DATA_char , buffer_message , &nombre_ACK_succ);
+        fseek(fp,(RCVSIZE-6)*(sequence_ACK_2-1),SEEK_SET);
+        sequence = sequence_ACK_2;
+        sprintf(sequence_char,"%06i",sequence);
+      }
       //printf("nombre_ACK_succ : %i \n",nombre_ACK_succ);
       /*if(nombre_ACK_succ == 1){
         collision_detection = 1 ; 
@@ -186,30 +209,35 @@ void gestion_client_fork(int *server_desc_control , int *server_desc_message , s
           slow_start_window_value = 4;
         }
       }*/
-      if(nombre_ACK_succ%window == 4){
+      if(nombre_ACK_succ%window == 5 && sequence-1 != end_sequence){
         memset(buffer_message, 0 , RCVSIZE);  
         strcpy((char * )buffer_message,sequence_char);
         size = fread(buffer_message+6,1,RCVSIZE-6,fp);
-        error = sendto(*server_desc_message,buffer_message,RCVSIZE,0,(struct sockaddr * )adresse_message , addr_size2);
-        printf("Send again \n");
+        error = sendto(*server_desc_message,buffer_message,RCVSIZE,0,(struct sockaddr * )&adresse_message , addr_size2);
+        //printf("Send again \n");
         sequence = sequence+1;
         sprintf(sequence_char,"%06i",sequence);
-        size = fread(buffer_message+6,1,RCVSIZE-6,fp);
+        //size = fread(buffer_message+6,1,RCVSIZE-6,fp);
+        fseek(fp,(RCVSIZE-6)*(sequence-1),SEEK_SET);
         collision_detection = 1 ; 
         slow_start_window_value = (int)(window/2);
-        if(slow_start_window_value <4){
-          slow_start_window_value = 4;
+        if(slow_start_window_value <10){
+          slow_start_window_value = 10;
         }
-
       }
       compt++ ; 
-      if(sequence_fin_window == sequence_ACK_2){
+      //printf("séquence_fin_window : %i \n",sequence_fin_window);
+      //printf("séquence_ACK_2 : %i \n",sequence_ACK_2);
+      if(sequence_fin_window == sequence_ACK_2 || sequence_fin_window-1 == sequence_ACK_2 || sequence_fin_window-1 == sequence_ACK_2){
         gettimeofday(&RTT_end, NULL);
         //printf(" sequence_fin_window : %i , sequence_ACK_2 : %i \n", sequence_fin_window,sequence_ACK_2);
         //printf("RTT_start : %li , RTT_end : %li \n", RTT_start.tv_usec , RTT_end.tv_usec);
         if(RTT_end.tv_usec - RTT_start.tv_usec > 0 ){
-          if(RTT_end.tv_usec - RTT_start.tv_usec > RTT/2){
+          if(RTT_end.tv_usec - RTT_start.tv_usec > RTT_init/15){
             RTT=trust_in_network*RTT+(1-trust_in_network)*(abs(RTT_end.tv_usec-RTT_start.tv_usec));
+            if(RTT<2000){
+              RTT =2000;
+            }
             printf("RTT : %li \n",RTT);
           }
         }
@@ -217,13 +245,21 @@ void gestion_client_fork(int *server_desc_control , int *server_desc_message , s
       }
         //printf("Le RTT : %li :\n ",RTT);
       }
+      else{
+        printf("0 donc oui \n");
+        sequence = first_sequence_of_window ; 
+        fseek(fp,(RCVSIZE-6)*(sequence-1),SEEK_SET);
+        sprintf(sequence_char,"%06i",sequence);
+        printf("RTT_end : %li , RTT_start : %li \n",RTT_end.tv_usec,RTT_start.tv_usec);
+        gettimeofday(&RTT_end, NULL);
+      }
       gettimeofday(&RTT_end, NULL);
       //printf(" RTT_start  : %li , RTT_end : %li ,result_select : %i \n",RTT_start.tv_usec , RTT_end.tv_usec , result_select);
 
   }while(abs(RTT_end.tv_usec-RTT_start.tv_usec) < RTT);
-          printf("La window = %i \n",window);
+          //printf("La window = %i \n",window);
           if(compt == 0){
-            window = 3;
+            window = 20;
 
           }
           else{
@@ -243,8 +279,11 @@ void gestion_client_fork(int *server_desc_control , int *server_desc_message , s
           collision_detection = 0 ; 
           RTT_start.tv_usec = 0;
           RTT_end.tv_usec = 0;
-  }while(NO_STOP == 1);
-    fseek(fp,(RCVSIZE-6)*(sequence_ACK_2-1),SEEK_SET);
+          //printf("end_sequence : %i et sequence_ACK_2 : %i \n",end_sequence,sequence_ACK_2);
+  }while(end_sequence != sequence_ACK_2-1);
+    printf("La séquence : %i , la séquence ACK : %i ,séquence_end : %i\n",sequence,sequence_ACK_2,end_sequence );
+    /*sprintf(sequence_char,"%06i",end_sequence);
+    fseek(fp,(RCVSIZE-6)*(end_sequence-1),SEEK_SET);
     memset(buffer_message, 0 , RCVSIZE);
     strcpy((char * )buffer_message,sequence_char);
     size = fread(buffer_message+6,1,RCVSIZE-6,fp);
@@ -253,12 +292,12 @@ void gestion_client_fork(int *server_desc_control , int *server_desc_message , s
       tv.tv_sec = 0 ;
       tv.tv_usec = 6000 ; 
       printf("Size : %i \n", size);
-      error = sendto(*server_desc_message,buffer_message,size+6,0,(struct sockaddr * )adresse_message , addr_size2);
+      error = sendto(*server_desc_message,buffer_message,size+6,0,(struct sockaddr * )&adresse_message , addr_size2);
       result_select = select(5, &readset , NULL , NULL , &tv); 
-    }while(result_select == 0);
+    *while(result_select == 0);*/
     memset(buffer_message, 0 , RCVSIZE);
     strcpy((char *)buffer_message,"FIN");
-    error = sendto(*server_desc_message,buffer_message,3,0,(struct sockaddr * )adresse_message , addr_size2);
+    error = sendto(*server_desc_message,buffer_message,3,0,(struct sockaddr * )&adresse_message , addr_size2);
     if(error == -1){
       printf("Error \n");
     }
